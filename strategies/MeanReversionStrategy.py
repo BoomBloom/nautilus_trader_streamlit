@@ -9,7 +9,7 @@ from nautilus_trader.model.objects import Quantity  # Price is imported implicit
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.trading.strategy import Strategy, StrategyConfig
-from nautilus_trader.indicators.base.indicator import Indicator
+from nautilus_trader.indicators import Indicator
 
 # --- Custom Bollinger Bands indicator in Python ---
 class BollingerBandsIndicator(Indicator):
@@ -158,7 +158,10 @@ class MeanReversionStrategy(Strategy):
         self.register_indicator_for_bars(self.config.bar_type, self.boll)
         self.register_indicator_for_bars(self.config.bar_type, self.rsi)
 
-        self.request_bars(self.config.bar_type)
+        try:
+            self.request_bars(self.config.bar_type)
+        except TypeError:
+            pass  # request_bars API differs; backtest bars arrive via subscribe
         self.subscribe_bars(self.config.bar_type)
 
     def on_bar(self, bar: Bar) -> None:

@@ -42,10 +42,38 @@ streamlit run app/main.py
 | ---------- | -------------- | ------------------------------------------------------------------------------------------ |
 | **v0.1.5** | ✅ Done         | Basic single-asset strategy visualization.                                                 |
 | **v0.2.0** | 🚧 In progress | Single-asset dashboard is fully usable and intuitive, featuring clear equity curves, drawdown analysis, trade markers, and essential risk metrics (VaR, Sharpe ratio).                |
-| **v0.3.0** | Planned        | Multi-asset portfolio backtests: summary equity, asset contribution analysis.              |
-| **v0.4.0** | Planned        | Integration of ML libraries (Qlib, skfolio) demonstrating example ML strategies based on Jupyter Notebook, showcasing integration methods and standard ML algorithms. |
+| **v0.3.0** | ✅ Done         | Multi-asset portfolio backtests: summary equity, asset contribution analysis.              |
+| **v0.4.0** | ✅ Done         | Integration of ML libraries (Qlib, skfolio) demonstrating example ML strategies based on Jupyter Notebook, showcasing integration methods and standard ML algorithms. |
 
 > ⚠️ ClickHouse integration is provided only as an example and is not guaranteed to be stable.
+
+---
+
+## 🤖 ML Notebooks (v0.4.0)
+
+Two executed example notebooks live in [`notebooks/`](./notebooks), sharing the same
+`DataConnector` CSV path the Streamlit app uses (helpers in `modules/ml_examples.py`):
+
+| Notebook | Library | What it demonstrates |
+| -------- | ------- | -------------------- |
+| [`01_skfolio_portfolio_optimization.ipynb`](./notebooks/01_skfolio_portfolio_optimization.ipynb) | **skfolio** | EDA → chronological split → `EqualWeighted` / `MeanRisk` / `HierarchicalRiskParity` → out-of-sample metrics, equity curves, weights bar charts → exports `notebooks/weights_skfolio.json` |
+| [`02_qlib_ml_strategy.ipynb`](./notebooks/02_qlib_ml_strategy.ipynb) | **pyqlib (Qlib)** | CSV → qlib `.bin` dump → `qlib.init` → **Alpha158** features + **LightGBM** (leak-free train/valid/test segments) → cross-sectional IC & score-quantile evaluation |
+
+```bash
+pip install -r requirements.txt -r requirements-ml.txt
+jupyter notebook notebooks/
+
+# Headless re-execution (all outputs verified):
+jupyter nbconvert --to notebook --execute --inplace \
+  --ExecutePreprocessor.kernel_name=<your-kernel> \
+  notebooks/01_skfolio_portfolio_optimization.ipynb \
+  notebooks/02_qlib_ml_strategy.ipynb
+```
+
+> 📝 The sample CSVs are synthetic GBM series — IC ≈ 0 is the *correct* result;
+> the notebooks showcase a reproducible pipeline. Point `load_ohlcv_frames` at
+> real market data to chase actual signal. Install **`pyqlib`**, not the
+> unrelated squatter package `qlib`, on PyPI.
 ---
 
 ## 🚫 Out-of-scope

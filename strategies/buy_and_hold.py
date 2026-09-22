@@ -39,7 +39,10 @@ class BuyAndHoldStrategy(Strategy):
             self.log.error(f"{self.config.instrument_id} not found – stopping strategy")
             self.stop(); return
 
-        self.request_bars(self.config.bar_type)
+        try:
+            self.request_bars(self.config.bar_type)
+        except TypeError:
+            pass  # request_bars API differs across builds; backtest bars arrive via subscribe
         self.subscribe_bars(self.config.bar_type)
 
     def on_bar(self, bar: Bar) -> None:

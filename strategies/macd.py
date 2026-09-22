@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from nautilus_trader.core.message import Event
-from nautilus_trader.indicators.macd import MovingAverageConvergenceDivergence
+from nautilus_trader.indicators import MovingAverageConvergenceDivergence
 from nautilus_trader.model.enums import OrderSide, PositionSide, PriceType
 from nautilus_trader.model.events import PositionOpened
 from nautilus_trader.model.identifiers import InstrumentId

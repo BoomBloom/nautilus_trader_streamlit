@@ -23,7 +23,7 @@ from decimal import Decimal
 from typing import Optional
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.indicators.average.ema import ExponentialMovingAverage
+from nautilus_trader.indicators import ExponentialMovingAverage
 from nautilus_trader.model.data import Bar, BarType
 from nautilus_trader.model.enums import OrderSide
 from nautilus_trader.model.identifiers import InstrumentId

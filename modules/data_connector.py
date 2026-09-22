@@ -99,6 +99,16 @@ class DataConnector:
             return sorted(_conv(tf) for tf in INTERVAL_STR_TO_CODE)
         raise ValueError(f"Unknown source: {source}")
 
+    def list_csv_datasets(self) -> List[Dict[str, str]]:
+        """Return all discovered CSV datasets (exchange, symbol, timeframe, path)."""
+        return [
+            dict(i)
+            for i in sorted(
+                self._scan_csv(),
+                key=lambda i: (i["exchange"], i["symbol"], i["timeframe"]),
+            )
+        ]
+
     def get_csv_path(self, exchange: str, symbol: str, timeframe: str) -> str:
         tf_norm = timeframe.lower().replace("min", "")
         for i in self._scan_csv():

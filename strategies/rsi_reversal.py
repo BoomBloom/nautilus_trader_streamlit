@@ -31,7 +31,7 @@ except ImportError:
 except ImportError:  # fallback for older wheels (shouldn’t be needed)
     from nautilus_trader.data import RequestBars  # type: ignore
 from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.indicators.base.indicator import Indicator
+from nautilus_trader.indicators import Indicator
 from nautilus_trader.model import Bar, BarType
 from nautilus_trader.model.enums import OrderSide, TimeInForce
 from nautilus_trader.model.identifiers import InstrumentId
@@ -129,9 +129,9 @@ class RSIReversal(Strategy):
         # Register indicator before history request ----------------------
         self.register_indicator_for_bars(self.config.bar_type, self.rsi)
 
-        # Warm‑up history: call signature differs by version
-        if RequestBars is not None:
-            try:
+        # Warm‑up history: call signature differs by version
+        try:
+            if RequestBars is not None:
                 seed_req = RequestBars(
                     self.config.bar_type,
                     None,
@@ -145,11 +145,10 @@ class RSIReversal(Strategy):
                     None,
                 )
                 self.request_bars(seed_req)
-            except (TypeError, ValueError):  # fallback if wrong signature
+            else:
                 self.request_bars(self.config.bar_type)
-        else:
-            # Older build – simple call without kwargs (limit not allowed)
-            self.request_bars(self.config.bar_type)
+        except (TypeError, ValueError):
+            pass  # historical request optional; backtest bars arrive via subscribe
 
         # Subscribe to realtime bars -------------------------------------
         self.subscribe_bars(self.config.bar_type)

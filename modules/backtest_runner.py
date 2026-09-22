@@ -24,7 +24,10 @@ from nautilus_trader.model.objects import (
     Money,
 )  # Money is imported but used as_decimal()
 from nautilus_trader.persistence.wranglers import BarDataWrangler
-from nautilus_trader.test_kit.providers import TestInstrumentProvider
+try:
+    from nautilus_trader.test_kit.providers import TestInstrumentProvider
+except ImportError:  # nautilus_trader >= 2.x renamed test_kit → testkit
+    from nautilus_trader.testkit.providers import TestInstrumentProvider
 from nautilus_trader.trading.strategy import Strategy
 
 _logger = logging.getLogger(__name__)
@@ -406,6 +409,7 @@ def run_backtest(
     data: Any,
     actor_cls: Type,
     reuse_engine: Optional[BacktestEngine] = None,
+    starting_balance: float = 10_000.0,
 ) -> Dict[str, Any]:
     """Run a back-test using either a CSV path or a ready DataFrame."""
 
@@ -419,7 +423,7 @@ def run_backtest(
 
     # 1) Engine + strategy + actor
     if reuse_engine is None:
-        engine = _init_engine(instr, bars)
+        engine = _init_engine(instr, bars, balance=starting_balance)
         cfg_args = {
             key: (
                 Decimal(str(val))
@@ -692,7 +696,7 @@ def run_backtest(
             except Exception as exc:
                 _logger.warning("PortfolioAnalyzer failed: %s", exc, exc_info=True)
                 _logger.warning("Falling back to manual equity calculation.")
-                start_balance = 10_000.0
+                start_balance = starting_balance
                 try:
                     account_obj = trader.get_account(Venue("BINANCE"))
                     bal = getattr(account_obj, "cash_balance", None)

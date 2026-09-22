@@ -3,7 +3,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from nautilus_trader.config import StrategyConfig
-from nautilus_trader.indicators.base.indicator import Indicator
+from nautilus_trader.indicators import Indicator
 from nautilus_trader.model import Bar, BarType, InstrumentId
 from nautilus_trader.model.instruments import Instrument
 from nautilus_trader.model.enums import OrderSide, TimeInForce
@@ -94,7 +94,10 @@ class TrendFollowingStrategy(Strategy):
 
         self.register_indicator_for_bars(self.config.bar_type, self.atr)
 
-        self.request_bars(self.config.bar_type)
+        try:
+            self.request_bars(self.config.bar_type)
+        except TypeError:
+            pass  # request_bars API differs; backtest bars arrive via subscribe
 
         self.subscribe_bars(self.config.bar_type)
 

@@ -1,0 +1,279 @@
+# portfolio_runner.py
+# -*- coding: utf-8 -*-
+"""Multi-asset portfolio backtests (v0.3.0).
+
+Runs N independent single-asset backtests with an equal capital split,
+aligns the per-asset equity curves into a portfolio summary equity, and
+computes per-asset contribution analysis.
+
+Each leg reuses the existing single-asset runner unchanged (including its
+BTCUSDT instrument factory); legs run on separate engines, so only the
+equity/PnL aggregation is portfolio-level — cross-asset position netting
+and shared-margin accounting are out of scope for v0.3.0.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Tuple, Type
+
+import numpy as np
+import pandas as pd
+from nautilus_trader.config import StrategyConfig
+from nautilus_trader.trading.strategy import Strategy
+
+from .backtest_runner import run_backtest
+
+_logger = logging.getLogger(__name__)
+
+__all__ = ["run_portfolio_backtest"]
+
+
+def _tz_naive(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_convert(None)
+    return pd.DatetimeIndex(idx)
+
+
+def _align_equity(curves: Dict[str, pd.Series], flat_value: float) -> pd.DataFrame:
+    """Align per-asset equity curves onto a shared tz-naive index.
+
+    Before an asset's first observation the curve is held at its starting
+    allocation (``flat_value``); after the last observation the final value
+    is forward-filled.
+    """
+    indices = [_tz_naive(s.index) for s in curves.values() if not s.empty]
+    if not indices:
+        return pd.DataFrame(columns=list(curves))
+    idx = indices[0]
+    for extra in indices[1:]:
+        idx = idx.union(extra)
+    idx = pd.DatetimeIndex(idx).sort_values()
+
+    out: Dict[str, pd.Series] = {}
+    for label, s in curves.items():
+        if s.empty:
+            out[label] = pd.Series(flat_value, index=idx, dtype="float64")
+            continue
+        ser = pd.Series(s.to_numpy(dtype="float64"), index=_tz_naive(s.index))
+        ser = ser[~ser.index.duplicated(keep="last")].sort_index()
+        ser = ser.reindex(idx).ffill()
+        ser = ser.fillna(flat_value)
+        out[label] = ser
+    return pd.DataFrame(out, index=idx)
+
+
+def _sharpe(returns: pd.Series) -> float:
+    if returns.empty or returns.std(ddof=0) == 0:
+        return float("nan")
+    return float((returns.mean() / returns.std(ddof=0)) * np.sqrt(252))
+
+
+def _sortino(returns: pd.Series) -> float:
+    neg = returns[returns < 0]
+    if returns.empty or neg.empty or neg.std(ddof=0) == 0:
+        return float("nan")
+    return float((returns.mean() / neg.std(ddof=0)) * np.sqrt(252))
+
+
+def _max_dd_abs(series: pd.Series) -> float:
+    if series.empty:
+        return float("nan")
+    return float((series.cummax() - series).max())
+
+
+def _max_dd_pct(series: pd.Series) -> float:
+    if series.empty:
+        return float("nan")
+    peak = series.cummax().replace(0, np.nan)
+    dd = ((peak - series) / peak).dropna()
+    return float(dd.max()) if not dd.empty else float("nan")
+
+
+def run_portfolio_backtest(
+    strat_cls: Type[Strategy],
+    cfg_cls: Type[StrategyConfig],
+    params: Dict[str, Any],
+    assets: List[Tuple[str, pd.DataFrame]],
+    actor_cls: type,
+    start_balance: float = 10_000.0,
+) -> Dict[str, Any]:
+    """Run an equal-weight portfolio of independent single-asset backtests.
+
+    Parameters
+    ----------
+    strat_cls, cfg_cls, params, actor_cls
+        Same contract as :func:`modules.backtest_runner.run_backtest`.
+    assets : list of (label, DataFrame)
+        One OHLCV DataFrame per asset (layout produced by ``load_ohlcv_csv``).
+    start_balance : float
+        Total portfolio starting capital, split equally across assets.
+
+    Returns
+    -------
+    dict
+        ``assets``          – label → single-asset ``run_backtest`` result
+        ``failed``          – label → error message for skipped legs
+        ``equity_components`` – aligned per-asset equity DataFrame
+        ``equity_df``       – summary DataFrame ``{"equity": total}``
+        ``contributions``   – per-asset contribution rows (DataFrame)
+        ``trades_df``       – concatenated trades of all legs
+        ``metrics``         – aggregate portfolio metrics
+        ``start_balance`` / ``allocation`` / ``n_assets``
+    """
+    if not assets:
+        raise ValueError("assets must contain at least one (label, dataframe) pair")
+    if start_balance <= 0:
+        raise ValueError("start_balance must be positive")
+
+    n = len(assets)
+    allocation = start_balance / n
+
+    results: Dict[str, Any] = {}
+    failed: Dict[str, str] = {}
+    curves: Dict[str, pd.Series] = {}
+    contrib_rows: List[Dict[str, Any]] = []
+
+    for label, df in assets:
+        if df is None or df.empty:
+            failed[label] = "empty dataframe"
+            _logger.warning("Portfolio leg %s skipped: empty dataframe", label)
+            continue
+        try:
+            res = run_backtest(
+                strat_cls,
+                cfg_cls,
+                params,
+                df,
+                actor_cls=actor_cls,
+                starting_balance=allocation,
+            )
+        except Exception as exc:  # keep remaining legs running
+            failed[label] = str(exc)
+            _logger.exception("Portfolio leg %s failed", label)
+            continue
+
+        results[label] = res
+
+        eq = res.get("equity_df")
+        if eq is None or eq.empty or "equity" not in eq.columns:
+            series = pd.Series(allocation, index=df.index[:1], dtype="float64")
+        else:
+            series = eq["equity"].astype("float64")
+        if getattr(series.index, "tz", None) is not None:
+            series.index = series.index.tz_convert(None)
+        curves[label] = series
+
+        m = res.get("metrics") or {}
+        first = float(series.iloc[0]) if not series.empty else allocation
+        last = float(series.iloc[-1]) if not series.empty else allocation
+        pnl = last - first
+        contrib_rows.append(
+            {
+                "asset": label,
+                "start_equity": first,
+                "final_equity": last,
+                "pnl": pnl,
+                "pnl_pct": (pnl / first * 100.0) if first else float("nan"),
+                "trades": int(m.get("num_trades", 0) or 0),
+                "win_rate": float(m.get("win_rate", float("nan"))),
+                "profit_factor": float(m.get("profit_factor", float("nan"))),
+                "max_drawdown": float(m.get("max_drawdown", float("nan"))),
+            }
+        )
+
+    if not results:
+        raise RuntimeError(f"All portfolio legs failed: {failed}")
+
+    components = _align_equity(curves, allocation)
+    summary = components.sum(axis=1).to_frame(name="equity")
+    summary.sort_index(inplace=True)
+
+    contrib = pd.DataFrame(contrib_rows)
+    if not contrib.empty:
+        total_pnl = float(contrib["pnl"].sum())
+        contrib["share_pct"] = (
+            contrib["pnl"] / total_pnl * 100.0 if total_pnl else float("nan")
+        )
+        contrib = contrib.sort_values("pnl", ascending=False).reset_index(drop=True)
+        for col in (
+            "start_equity",
+            "final_equity",
+            "pnl",
+            "pnl_pct",
+            "share_pct",
+            "win_rate",
+            "profit_factor",
+            "max_drawdown",
+        ):
+            if col in contrib.columns:
+                contrib[col] = contrib[col].round(2)
+
+    trade_frames: List[pd.DataFrame] = []
+    for label, res in results.items():
+        t = res.get("trades_df")
+        if t is not None and not t.empty:
+            t = t.copy()
+            t["asset"] = label
+            trade_frames.append(t)
+    all_trades = (
+        pd.concat(trade_frames, ignore_index=True) if trade_frames else pd.DataFrame()
+    )
+
+    eq_series = summary["equity"]
+    total_start = float(eq_series.iloc[0])
+    total_final = float(eq_series.iloc[-1])
+    total_profit = total_final - total_start
+    returns = eq_series.pct_change().dropna()
+    sharpe = _sharpe(returns)
+    sortino = _sortino(returns)
+    max_dd = _max_dd_abs(eq_series)
+    max_dd_pct = _max_dd_pct(eq_series)
+
+    if all_trades.empty:
+        gains = losses = 0.0
+        num_trades = 0
+        win_rate = 0.0
+    else:
+        gains = float(all_trades.loc[all_trades["profit"] > 0, "profit"].sum())
+        losses = float(all_trades.loc[all_trades["profit"] < 0, "profit"].sum())
+        num_trades = int(len(all_trades))
+        win_rate = float((all_trades["profit"] > 0).mean() * 100.0)
+
+    if losses == 0:
+        profit_factor = np.inf if gains > 0 else np.nan
+    else:
+        profit_factor = gains / abs(losses)
+
+    metrics = {
+        "total_start": round(total_start, 2),
+        "total_final": round(total_final, 2),
+        "total_profit": round(total_profit, 2),
+        "total_return_pct": (
+            round(total_profit / total_start * 100.0, 2) if total_start else float("nan")
+        ),
+        "sharpe": round(sharpe, 2) if not np.isnan(sharpe) else float("nan"),
+        "sortino": round(sortino, 2) if not np.isnan(sortino) else float("nan"),
+        "max_drawdown": round(max_dd, 2) if not np.isnan(max_dd) else float("nan"),
+        "max_drawdown_pct": (
+            round(max_dd_pct * 100.0, 2) if not np.isnan(max_dd_pct) else float("nan")
+        ),
+        "num_trades": num_trades,
+        "win_rate": round(win_rate, 2),
+        "profit_factor": (
+            round(float(profit_factor), 2) if np.isfinite(profit_factor) else float(profit_factor)
+        ),
+    }
+
+    return {
+        "assets": results,
+        "failed": failed,
+        "equity_components": components,
+        "equity_df": summary,
+        "contributions": contrib,
+        "trades_df": all_trades,
+        "metrics": metrics,
+        "start_balance": float(start_balance),
+        "allocation": float(allocation),
+        "n_assets": len(results),
+    }

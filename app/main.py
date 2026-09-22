@@ -37,6 +37,7 @@ from modules.backtest_runner import run_backtest
 from modules.dashboard_actor import DashboardPublisher  # optional, only if supported
 from modules.data_connector import DataConnector
 from modules.csv_data import load_ohlcv_csv
+from modules.portfolio_runner import run_portfolio_backtest
 from datetime import timedelta
 
 # ───────────────────────────── Streamlit page ────────────────────────────────
@@ -83,6 +84,8 @@ if "bt_result" not in st.session_state:
     st.session_state["bt_tpl"] = "plotly_white"
     st.session_state["bt_accent"] = "#10B981"
     st.session_state["bt_neg"] = "#EF4444"
+if "pf_result" not in st.session_state:
+    st.session_state["pf_result"] = None
 
 
 # ╭──────────────────────── helper utilities ─────────────────────────────────╮
@@ -1505,6 +1508,157 @@ def draw_dashboard(
             st.code(log_text, language="text")
 
 
+# ╭──────────────── portfolio dashboard renderer ────────────────────────────╮
+def draw_portfolio_dashboard(
+    result: dict, log_text: str, TPL: str, ACCENT: str, NEG: str
+) -> None:
+    """Render multi-asset portfolio summary equity + contribution analysis."""
+
+    m = result["metrics"]
+    eq = result["equity_df"]
+    comp = result["equity_components"]
+    contrib = result["contributions"]
+
+    def _f(v, p: int = 2) -> str:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return "—"
+        return f"{v:,.{p}f}"
+
+    def _fpct(v) -> str:
+        if v is None or (isinstance(v, float) and np.isnan(v)):
+            return "—"
+        return f"{v:+.2f}%"
+
+    st.subheader("📊 Portfolio summary")
+
+    r1 = st.columns(6)
+    r1[0].metric("Assets", result["n_assets"])
+    r1[1].metric("Start capital", _f(result["start_balance"], 0))
+    r1[2].metric("Final equity", _f(m.get("total_final")))
+    r1[3].metric("PnL ($)", _f(m.get("total_profit")))
+    r1[4].metric("PnL (%)", _fpct(m.get("total_return_pct")))
+    r1[5].metric("Sharpe", _f(m.get("sharpe")))
+
+    r2 = st.columns(6)
+    r2[0].metric("Sortino", _f(m.get("sortino")))
+    r2[1].metric("Max DD ($)", _f(m.get("max_drawdown")))
+    r2[2].metric("Max DD (%)", _f(m.get("max_drawdown_pct")))
+    r2[3].metric("Trades", int(m.get("num_trades", 0) or 0))
+    r2[4].metric("Win Rate", _f(m.get("win_rate")) + ("%" if m.get("win_rate") is not None else ""))
+    r2[5].metric("Profit Factor", _f(m.get("profit_factor")))
+
+    st.caption(f"Allocation per asset: {_f(result['allocation'])} USDT (equal split)")
+
+    failed = {**result.get("failed", {}), **result.get("load_errors", {})}
+    if failed:
+        st.warning(
+            "Skipped assets: " + "; ".join(f"`{k}` — {v}" for k, v in failed.items())
+        )
+
+    # ── Summary equity (total + per-asset legs) ──────────────────────────
+    if not eq.empty:
+        fig_eq = go.Figure()
+        fig_eq.add_trace(
+            go.Scatter(
+                x=eq.index,
+                y=eq["equity"],
+                name="Portfolio",
+                line=dict(color=ACCENT, width=2.5),
+            )
+        )
+        for col in comp.columns:
+            fig_eq.add_trace(
+                go.Scatter(
+                    x=comp.index,
+                    y=comp[col],
+                    name=str(col),
+                    line=dict(width=1),
+                )
+            )
+        fig_eq.add_hline(
+            y=result["start_balance"],
+            line_dash="dash",
+            line_color="#9ca3af",
+            annotation_text="Start capital",
+        )
+        fig_eq.update_layout(
+            template=TPL,
+            legend_orientation="h",
+            yaxis_title="Equity (USDT)",
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        peak = eq["equity"].cummax().replace(0, np.nan)
+        dd = (eq["equity"] - peak) / peak * 100.0
+        fig_dd = px.area(x=dd.index, y=dd.values, template=TPL)
+        fig_dd.update_layout(title="Portfolio drawdown (%)", yaxis_title="Drawdown (%)")
+        st.plotly_chart(fig_dd, use_container_width=True)
+    else:
+        st.info("Portfolio equity data unavailable.")
+
+    # ── Asset contribution ───────────────────────────────────────────────
+    st.subheader("🧩 Asset contribution")
+    if contrib.empty:
+        st.info("No contribution data.")
+    else:
+        left, right = st.columns(2)
+        with left:
+            fig_bar = px.bar(
+                contrib,
+                x="asset",
+                y="pnl",
+                color="pnl",
+                color_continuous_scale="RdYlGn",
+                template=TPL,
+                title="PnL by asset",
+                hover_data=["pnl_pct", "share_pct"],
+            )
+            fig_bar.add_hline(y=0, line_color="#6b7280")
+            st.plotly_chart(fig_bar, use_container_width=True)
+        with right:
+            fig_pie = px.pie(
+                contrib,
+                names="asset",
+                values="final_equity",
+                title="Final equity share",
+                template=TPL,
+                hole=0.45,
+            )
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        show_cols = [
+            "asset",
+            "start_equity",
+            "final_equity",
+            "pnl",
+            "pnl_pct",
+            "share_pct",
+            "trades",
+            "win_rate",
+            "profit_factor",
+            "max_drawdown",
+        ]
+        show_cols = [c for c in show_cols if c in contrib.columns]
+        st.dataframe(
+            contrib[show_cols], use_container_width=True, hide_index=True
+        )
+
+    # ── Single-asset drill-down ──────────────────────────────────────────
+    if result.get("assets"):
+        with st.expander("🔎 Single-asset drill-down", expanded=False):
+            label = st.selectbox(
+                "Asset", list(result["assets"].keys()), key="pf_drill"
+            )
+            draw_dashboard(
+                result["assets"][label], log_text, TPL, ACCENT, NEG
+            )
+
+    if log_text:
+        with st.expander("Full portfolio log", expanded=False):
+            st.code(log_text, language="text")
+
+
 # ╭──────────────────────── sidebar (user inputs) ─────────────────────────────╮
 strategies = discover_strategies("strategies")
 if not strategies:
@@ -1518,6 +1672,14 @@ with st.sidebar:
     if info.doc:
         st.caption(info.doc)
 
+    bt_mode = st.radio(
+        "Mode",
+        ["Single asset", "Portfolio (multi-asset)"],
+        horizontal=True,
+        key="bt_mode",
+    )
+    portfolio_mode = bt_mode.startswith("Portfolio")
+
     connector = DataConnector()
 
     # ── Data source tabs ────────────────────────────────────────────────
@@ -1528,9 +1690,13 @@ with st.sidebar:
     csv_path = None
     symbol = None
     exchange = None
+    portfolio_symbols: list = []
+    portfolio_balance = 10_000.0
     csv_exchs = connector.get_exchanges("CSV")
     csv_syms = connector.get_symbols("CSV", csv_exchs[0] if csv_exchs else None)
     csv_tfs = connector.get_timeframes("CSV")
+    exchange_pf = csv_exchs[0] if csv_exchs else ""
+    tf_pf = csv_tfs[0] if csv_tfs else ""
     ch_exchs = connector.get_exchanges("ClickHouse")
     ch_tfs = connector.get_timeframes("ClickHouse")
     tf_csv = csv_tfs[0] if csv_tfs else ""
@@ -1570,47 +1736,85 @@ with st.sidebar:
         chosen_id = st.session_state["data_tab"]
 
     if chosen_id == "csv":
-        row1 = st.columns(3)
-        exchange_csv = csv_exchs[0] if csv_exchs else ""
-        symbol_csv = csv_syms[0] if csv_syms else ""
-        
-        row1[0].text_input(
-            "Exchange",
-            exchange_csv,
-            disabled=True,
-            key="csv_exch",
-        )
-        row1[1].text_input(
-            "Symbol",
-            symbol_csv,
-            disabled=True,
-            key="csv_sym",
-        )
-        tf_csv = row1[2].selectbox(
-            "TimeFrame",
-            csv_tfs,
-            index=0,
-            key="csv_tf",
-        )
-
-        row2 = st.columns(2)
-        start_csv = row2[0].date_input(
-            "Date from",
-            start_csv,
-            key="csv_start",
-        )
-        end_csv = row2[1].date_input(
-            "Date to",
-            end_csv,
-            key="csv_end",
-        )
-
-        if csv_exchs and csv_syms:
-            csv_path = connector.get_csv_path(csv_exchs[0], csv_syms[0], tf_csv)
+        if portfolio_mode:
+            prow = st.columns(2)
+            exchange_pf = prow[0].selectbox("Exchange", csv_exchs, key="pf_exch")
+            tf_pf = prow[1].selectbox("TimeFrame", csv_tfs, index=0, key="pf_tf")
+            pf_syms = connector.get_symbols("CSV", exchange_pf)
+            portfolio_symbols = st.multiselect(
+                "Assets", pf_syms, default=pf_syms, key="pf_symbols"
+            )
+            st.caption(
+                f"{len(portfolio_symbols)} asset(s) selected — capital split equally"
+            )
+            portfolio_balance = st.number_input(
+                "Total capital (USDT)",
+                value=10_000.0,
+                min_value=1.0,
+                step=1_000.0,
+                key="pf_balance",
+            )
+            row2 = st.columns(2)
+            start_csv = row2[0].date_input("Date from", start_csv, key="csv_start")
+            end_csv = row2[1].date_input("Date to", end_csv, key="csv_end")
+            paths = []
+            for sym in portfolio_symbols:
+                try:
+                    paths.append(connector.get_csv_path(exchange_pf, sym, tf_pf))
+                except FileNotFoundError:
+                    pass
+            if paths:
+                names = ", ".join(f"`{pathlib.Path(p).name}`" for p in paths)
+                st.write(f"Data files: {names}")
+            csv_path = paths[0] if paths else ""
         else:
-            csv_path = ""
-        st.write(f"Data file: **{csv_path}**")
+            row1 = st.columns(3)
+            exchange_csv = csv_exchs[0] if csv_exchs else ""
+            symbol_csv = csv_syms[0] if csv_syms else ""
+
+            row1[0].text_input(
+                "Exchange",
+                exchange_csv,
+                disabled=True,
+                key="csv_exch",
+            )
+            row1[1].text_input(
+                "Symbol",
+                symbol_csv,
+                disabled=True,
+                key="csv_sym",
+            )
+            tf_csv = row1[2].selectbox(
+                "TimeFrame",
+                csv_tfs,
+                index=0,
+                key="csv_tf",
+            )
+
+            row2 = st.columns(2)
+            start_csv = row2[0].date_input(
+                "Date from",
+                start_csv,
+                key="csv_start",
+            )
+            end_csv = row2[1].date_input(
+                "Date to",
+                end_csv,
+                key="csv_end",
+            )
+
+            if csv_exchs and csv_syms:
+                csv_path = connector.get_csv_path(
+                    csv_exchs[0], csv_syms[0], tf_csv
+                )
+            else:
+                csv_path = ""
+            st.write(f"Data file: **{csv_path}**")
     else:
+        if portfolio_mode:
+            st.info(
+                "Portfolio mode uses CSV data only — switch back to the CSV tab to run it."
+            )
         row1 = st.columns(3)
         exchange = row1[0].selectbox("Exchange", ch_exchs, key="ch_exch")
         symbol = row1[1].text_input("Symbol", "BTCUSDT", key="ch_sym")
@@ -1656,32 +1860,78 @@ TPL = st.session_state["bt_tpl"]
 ACCENT = st.session_state["bt_accent"]
 NEG = st.session_state["bt_neg"]
 
-data_source: str
-data_spec: Any
-start_dt: datetime
-end_dt: datetime
-
 run_csv = run_bt and st.session_state.get("data_tab") == "csv"
 run_ch = run_bt and st.session_state.get("data_tab") == "ch"
 
-if run_csv:
-    data_source = "CSV"
-    data_spec = csv_path
-    start_dt = pd.to_datetime(start_csv, utc=True)
-    end_dt = pd.to_datetime(end_csv, utc=True) + pd.Timedelta(days=1)
-elif run_ch:
-    data_source = "ClickHouse"
-    data_spec = {
-        "exchange": exchange,
-        "symbol": symbol,
-        "timeframe": (tf_ch[:-3] + "m") if tf_ch.endswith("min") else tf_ch,
-        "start": datetime.combine(start_ch, datetime.min.time()),
-        "end": datetime.combine(end_ch, datetime.min.time()),
-    }
-    start_dt = datetime.combine(start_ch, datetime.min.time())
-    end_dt = datetime.combine(end_ch, datetime.min.time())
+if run_bt and portfolio_mode:
+    if not run_csv:
+        st.error(
+            "Portfolio mode supports CSV data only — switch the Data source tab to CSV."
+        )
+    else:
+        start_dt = pd.to_datetime(start_csv, utc=True)
+        end_dt = pd.to_datetime(end_csv, utc=True) + pd.Timedelta(days=1)
+        with st.spinner("Running portfolio back‑test… please wait"):
+            connector = DataConnector()
+            assets = []
+            load_errors: Dict[str, str] = {}
+            for sym in portfolio_symbols:
+                try:
+                    path = connector.get_csv_path(exchange_pf, sym, tf_pf)
+                    df = connector.load("CSV", path, start=start_dt, end=end_dt)
+                    if df.empty:
+                        load_errors[sym] = "no rows in selected date range"
+                    else:
+                        assets.append((sym, df))
+                except Exception as exc:
+                    load_errors[sym] = str(exc)
+            if not assets:
+                st.error("No data found for the selected assets / date range.")
+                st.stop()
+            log_stream = io.StringIO()
+            with redirect_stdout(log_stream), redirect_stderr(log_stream):
+                pf_result = run_portfolio_backtest(
+                    info.strategy_cls,
+                    info.cfg_cls,
+                    params,
+                    assets,
+                    actor_cls=DashboardPublisher,
+                    start_balance=float(portfolio_balance),
+                )
+            pf_result["load_errors"] = load_errors
+            log_text = log_stream.getvalue()
+        st.session_state["pf_result"] = pf_result
+        st.session_state["bt_result"] = None
+        st.session_state["bt_log"] = log_text
+        st.session_state["bt_tpl"] = TPL
+        st.session_state["bt_accent"] = ACCENT
+        st.session_state["bt_neg"] = NEG
+elif run_bt:
+    data_source: str
+    data_spec: Any
+    start_dt: datetime
+    end_dt: datetime
 
-if run_bt:
+    if run_csv:
+        data_source = "CSV"
+        data_spec = csv_path
+        start_dt = pd.to_datetime(start_csv, utc=True)
+        end_dt = pd.to_datetime(end_csv, utc=True) + pd.Timedelta(days=1)
+    elif run_ch:
+        data_source = "ClickHouse"
+        data_spec = {
+            "exchange": exchange,
+            "symbol": symbol,
+            "timeframe": (tf_ch[:-3] + "m") if tf_ch.endswith("min") else tf_ch,
+            "start": datetime.combine(start_ch, datetime.min.time()),
+            "end": datetime.combine(end_ch, datetime.min.time()),
+        }
+        start_dt = datetime.combine(start_ch, datetime.min.time())
+        end_dt = datetime.combine(end_ch, datetime.min.time())
+    else:
+        st.error("Unknown data source.")
+        st.stop()
+
     with st.spinner("Running back‑test… please wait"):
         connector = DataConnector()
         data_df = connector.load(data_source, data_spec, start=start_dt, end=end_dt)
@@ -1711,12 +1961,21 @@ if run_bt:
         log_text = log_stream.getvalue()
 
     st.session_state["bt_result"] = result
+    st.session_state["pf_result"] = None
     st.session_state["bt_log"] = log_text
     st.session_state["bt_tpl"] = TPL
     st.session_state["bt_accent"] = ACCENT
     st.session_state["bt_neg"] = NEG
 
-if st.session_state.get("bt_result") is not None:
+if portfolio_mode and st.session_state.get("pf_result") is not None:
+    draw_portfolio_dashboard(
+        st.session_state["pf_result"],
+        st.session_state["bt_log"],
+        st.session_state["bt_tpl"],
+        st.session_state["bt_accent"],
+        st.session_state["bt_neg"],
+    )
+elif st.session_state.get("bt_result") is not None:
     draw_dashboard(
         st.session_state["bt_result"],
         st.session_state["bt_log"],
