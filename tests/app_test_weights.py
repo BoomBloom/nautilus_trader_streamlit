@@ -21,6 +21,14 @@ def main() -> int:
         return 1
     print("[1] initial run OK")
 
+    # pin the strategy (discover order is env-dependent otherwise; ScoreTarget
+    # stays flat without scores and would make finals identical across modes)
+    at.selectbox(key="strat_name").set_value("MeanReversionStrategy")
+    at.run()
+    if at.exception:
+        print("EXCEPTION strategy set:", [e.value for e in at.exception])
+        return 1
+
     # switch to Portfolio mode
     at.radio(key="bt_mode").set_value("Portfolio (multi-asset)")
     at.run()

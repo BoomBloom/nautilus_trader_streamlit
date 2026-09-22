@@ -471,10 +471,12 @@ def draw_dashboard(
 
         price_df = price_df.loc[period_start:period_end]
         equity_df = equity_df.loc[period_start:period_end]
-        trades_df = trades_df[
-            (trades_df["entry_time"] >= period_start)
-            & (trades_df["entry_time"] <= period_end)
-        ]
+        # zero-trade runs (e.g. ScoreTarget flat) can yield a column-less frame
+        if "entry_time" in trades_df.columns:
+            trades_df = trades_df[
+                (trades_df["entry_time"] >= period_start)
+                & (trades_df["entry_time"] <= period_end)
+            ]
 
         price_series = (
             price_df["close"] if "close" in price_df else price_df.iloc[:, 0]
@@ -1675,7 +1677,7 @@ if not strategies:
 
 with st.sidebar:
     st.header("Configuration")
-    strat_name = st.selectbox("Strategy", list(strategies))
+    strat_name = st.selectbox("Strategy", list(strategies), key="strat_name")
     info = strategies[strat_name]
     if info.doc:
         st.caption(info.doc)

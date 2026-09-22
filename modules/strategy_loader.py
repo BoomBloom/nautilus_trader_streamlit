@@ -66,8 +66,9 @@ def discover_strategies(root: str = "strategies") -> Dict[str, StrategyInfo]:
             }
 
     infos: Dict[str, StrategyInfo] = {}
-    # Scan all .py files in the root path
-    for py in root_path.glob("*.py"):
+    # Scan all .py files in the root path (sorted → deterministic default
+    # strategy across filesystems)
+    for py in sorted(root_path.glob("*.py")):
         if py.name == "admin.py":
             continue
         try:
