@@ -16,6 +16,7 @@ and shared-margin accounting are out of scope.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import numbers
 from decimal import Decimal
@@ -167,6 +168,7 @@ def run_portfolio_backtest(
     actor_cls: type,
     start_balance: float = 10_000.0,
     weights: Dict[str, float] | None = None,
+    scores: Dict[str, float] | None = None,
 ) -> Dict[str, Any]:
     """Run a portfolio of independent single-asset backtests.
 
@@ -187,6 +189,12 @@ def run_portfolio_backtest(
         ratio so exposure follows the weights. When omitted (or when no
         positive weight matches), capital is split equally — the v0.3.0
         default, with ``trade_size`` untouched.
+    scores : dict, optional
+        Per-asset model scores (e.g. from ``notebooks/scores_qlib.json``).
+        Matched against asset labels (case-insensitive; absent → 0.0) and
+        injected as the ``score`` config param per leg — used by
+        ``ScoreTargetStrategy`` to gate entries. Requires the strategy
+        config to expose a ``score`` field; otherwise ignored.
 
     Returns
     -------
@@ -208,6 +216,18 @@ def run_portfolio_backtest(
 
     n = len(assets)
     equal_allocation = start_balance / n
+
+    # Per-leg score injection (only if the strategy config accepts it).
+    scores_lookup: Dict[str, float] | None = None
+    if scores is not None and "score" in inspect.signature(cfg_cls).parameters:
+        scores_lookup = {}
+        for sk, sv in scores.items():
+            try:
+                fv = float(sv)
+            except (TypeError, ValueError):
+                continue
+            if np.isfinite(fv):
+                scores_lookup[str(sk).upper()] = fv
 
     # ── resolve per-leg allocations ────────────────────────────────────
     weights_source = "equal"
@@ -248,6 +268,11 @@ def run_portfolio_backtest(
             leg_params = _scale_trade_size(
                 params, cfg_cls, allocation / equal_allocation
             )
+        if scores_lookup is not None:
+            leg_params = {
+                **leg_params,
+                "score": scores_lookup.get(str(label).upper(), 0.0),
+            }
         try:
             res = run_backtest(
                 strat_cls,

@@ -1768,6 +1768,7 @@ with st.sidebar:
                 horizontal=True,
             )
             custom_weights: Dict[str, float] | None = None
+            _scores: Dict[str, float] | None = None
             if split_src.startswith("skfolio"):
                 wpath = st.text_input(
                     "Weights JSON",
@@ -1955,6 +1956,12 @@ with st.sidebar:
         else:
             params[field] = st.text_input(label, value=str(default or ""))
 
+    # Optional fields (default None) render as text; empty input must map
+    # back to None so msgspec configs don't reject "".
+    for _f in list(params):
+        if params[_f] == "" and get_field_default(info.cfg_cls, _f) is None:
+            params[_f] = None
+
     st.markdown("---")
 
     run_bt = st.button("Run back‑test", key="run_bt")
@@ -1999,6 +2006,9 @@ if run_bt and portfolio_mode:
                 weights_arg = {
                     sym: _lk.get(sym.upper(), 0.0) for sym in portfolio_symbols
                 }
+            scores_arg: Dict[str, float] | None = None
+            if split_src.startswith("Qlib") and _scores:
+                scores_arg = _scores
             log_stream = io.StringIO()
             with redirect_stdout(log_stream), redirect_stderr(log_stream):
                 pf_result = run_portfolio_backtest(
@@ -2009,6 +2019,7 @@ if run_bt and portfolio_mode:
                     actor_cls=DashboardPublisher,
                     start_balance=float(portfolio_balance),
                     weights=weights_arg,
+                    scores=scores_arg,
                 )
             pf_result["load_errors"] = load_errors
             log_text = log_stream.getvalue()

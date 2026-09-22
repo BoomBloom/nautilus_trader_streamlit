@@ -31,3 +31,6 @@ jobs:
 
       - name: App E2E (weights + scores)
         run: python tests/app_test_weights.py
+
+      - name: Score strategy
+        run: python tests/test_score_strategy.py
