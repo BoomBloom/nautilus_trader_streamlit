@@ -44,6 +44,7 @@ streamlit run app/main.py
 | **v0.2.0** | 🚧 In progress | Single-asset dashboard is fully usable and intuitive, featuring clear equity curves, drawdown analysis, trade markers, and essential risk metrics (VaR, Sharpe ratio).                |
 | **v0.3.0** | ✅ Done         | Multi-asset portfolio backtests: summary equity, asset contribution analysis.              |
 | **v0.4.0** | ✅ Done         | Integration of ML libraries (Qlib, skfolio) demonstrating example ML strategies based on Jupyter Notebook, showcasing integration methods and standard ML algorithms. |
+| **v0.5.0** | ✅ Done         | ML outputs drive Portfolio-mode capital allocation: skfolio weights JSON + Qlib score-derived weights (per-leg `trade_size` scales with its share). |
 
 > ⚠️ ClickHouse integration is provided only as an example and is not guaranteed to be stable.
 
@@ -60,8 +61,9 @@ Two executed example notebooks live in [`notebooks/`](./notebooks), sharing the 
 | [`02_qlib_ml_strategy.ipynb`](./notebooks/02_qlib_ml_strategy.ipynb) | **pyqlib (Qlib)** | CSV → qlib `.bin` dump → `qlib.init` → **Alpha158** features + **LightGBM** (leak-free train/valid/test segments) → cross-sectional IC & score-quantile evaluation |
 
 The Streamlit app's **Portfolio mode** sidebar can load `weights_skfolio.json`
-(*equal split* vs *skfolio weights*, pick model) — each leg's capital and
-`trade_size` scale with its weight.
+(*equal split* vs *skfolio weights*, pick model) or `scores_qlib.json`
+(*Qlib scores* → weights) — each leg's capital and `trade_size` scale with
+its weight.
 
 ```bash
 pip install -r requirements.txt -r requirements-ml.txt

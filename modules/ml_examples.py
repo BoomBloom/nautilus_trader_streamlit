@@ -31,6 +31,8 @@ __all__ = [
     "weights_to_json",
     "dump_to_qlib",
     "run_qlib_lgbm",
+    "scores_to_json",
+    "scores_to_weights",
 ]
 
 
@@ -372,3 +374,60 @@ def run_qlib_lgbm(
     elif "score" not in getattr(pred, "columns", []):
         pred = pred.rename(columns={pred.columns[0]: "score"})
     return pred, model
+
+
+# ─────────────────────── scores → app allocation ────────────────────────────
+def scores_to_json(pred: pd.DataFrame, path: str | Path, tail: int = 1) -> Path:
+    """Persist the latest cross-sectional scores for the Streamlit app.
+
+    ``pred`` is the ``(datetime, instrument)`` frame returned by
+    :func:`run_qlib_lgbm`. The last ``tail`` timestamps are averaged per
+    instrument and written as ``{"asof": ..., "scores": {asset: score}}``.
+    """
+    scores = pred["score"] if "score" in pred.columns else pred.iloc[:, 0]
+    if isinstance(scores, pd.DataFrame):
+        scores = scores.iloc[:, 0]
+    if not isinstance(scores.index, pd.MultiIndex):
+        raise TypeError("pred must be indexed by (datetime, instrument)")
+    names = list(scores.index.names)
+    inst_level = "instrument" if "instrument" in names else names[-1]
+    dt_level = next((n for n in names if n != inst_level), None)
+    tail = max(1, int(tail))
+    recent = scores.groupby(level=inst_level, sort=False).tail(tail)
+    last = recent.groupby(level=inst_level, sort=False).mean()
+    asof = recent.index.get_level_values(dt_level).max() if dt_level else None
+    payload = {
+        "asof": str(asof) if asof is not None else None,
+        "scores": {str(k): float(v) for k, v in last.items()},
+    }
+    path = Path(path)
+    path.write_text(json.dumps(payload, indent=2))
+    print(f"wrote {path}")
+    return path
+
+
+def scores_to_weights(scores: Dict[str, float]) -> Dict[str, float]:
+    """Map predicted scores to capital weights (sum to 1).
+
+    Non-positive scores get 0 weight (no capital to assets the model ranks
+    as not worthwhile); the positive part is normalized. If nothing is
+    positive, fall back to equal weights.
+    """
+    if not scores:
+        return {}
+    vals: Dict[str, float] = {}
+    for k, v in scores.items():
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(fv):
+            vals[str(k)] = fv
+    if not vals:
+        return {}
+    pos = {k: v for k, v in vals.items() if v > 0}
+    if not pos:
+        eq = 1.0 / len(vals)
+        return {k: eq for k in vals}
+    total = sum(pos.values())
+    return {k: (pos[k] / total if k in pos else 0.0) for k in vals}

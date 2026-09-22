@@ -1760,10 +1760,10 @@ with st.sidebar:
                 step=1_000.0,
                 key="pf_balance",
             )
-            # ── capital allocation: equal split vs skfolio weights JSON ──
+            # ── capital allocation: equal split vs ML-produced weights ──
             split_src = st.radio(
                 "Capital allocation",
-                ["Equal split", "skfolio weights (JSON)"],
+                ["Equal split", "skfolio weights (JSON)", "Qlib scores (JSON)"],
                 key="pf_weights_src",
                 horizontal=True,
             )
@@ -1813,6 +1813,52 @@ with st.sidebar:
                         f"JSON weights — {_prev} (normalized over selected assets; "
                         "legs under $1 are skipped)"
                     )
+            elif split_src.startswith("Qlib"):
+                spath = st.text_input(
+                    "Scores JSON",
+                    value="notebooks/scores_qlib.json",
+                    key="pf_scores_path",
+                )
+                try:
+                    _raw = json.loads(pathlib.Path(spath).expanduser().read_text())
+                    _asof = None
+                    if isinstance(_raw, dict) and isinstance(_raw.get("scores"), dict):
+                        _scores = {str(k): float(v) for k, v in _raw["scores"].items()}
+                        _asof = _raw.get("asof")
+                    elif isinstance(_raw, dict) and _raw and all(
+                        isinstance(v, numbers.Real) for v in _raw.values()
+                    ):
+                        _scores = {str(k): float(v) for k, v in _raw.items()}
+                    else:
+                        _scores = {}
+                        st.error(
+                            'Scores JSON must be `{"asof": ..., "scores": '
+                            '{asset: score}}` or `{asset: score}`.'
+                        )
+                    if _scores:
+                        from modules.ml_examples import scores_to_weights
+
+                        custom_weights = scores_to_weights(_scores)
+                        _sk = ", ".join(f"{k} {v:+.4g}" for k, v in _scores.items())
+                        _lk = {
+                            k.upper(): float(v) for k, v in custom_weights.items()
+                        }
+                        _prev = ", ".join(
+                            f"{sym} {_lk.get(sym.upper(), 0.0) * 100:.1f}%"
+                            for sym in portfolio_symbols
+                        )
+                        _when = f" @ {_asof}" if _asof else ""
+                        st.caption(
+                            f"Qlib scores{_when} — {_sk} → weights {_prev} "
+                            "(non-positive scores get 0%; legs under $1 are skipped)"
+                        )
+                except FileNotFoundError:
+                    st.error(
+                        f"`{spath}` not found — run "
+                        "`02_qlib_ml_strategy.ipynb` or switch to equal split."
+                    )
+                except Exception as exc:
+                    st.error(f"Could not load scores: {exc}")
             row2 = st.columns(2)
             start_csv = row2[0].date_input("Date from", start_csv, key="csv_start")
             end_csv = row2[1].date_input("Date to", end_csv, key="csv_end")
