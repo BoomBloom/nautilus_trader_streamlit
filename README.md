@@ -59,6 +59,10 @@ Two executed example notebooks live in [`notebooks/`](./notebooks), sharing the 
 | [`01_skfolio_portfolio_optimization.ipynb`](./notebooks/01_skfolio_portfolio_optimization.ipynb) | **skfolio** | EDA → chronological split → `EqualWeighted` / `MeanRisk` / `HierarchicalRiskParity` → out-of-sample metrics, equity curves, weights bar charts → exports `notebooks/weights_skfolio.json` |
 | [`02_qlib_ml_strategy.ipynb`](./notebooks/02_qlib_ml_strategy.ipynb) | **pyqlib (Qlib)** | CSV → qlib `.bin` dump → `qlib.init` → **Alpha158** features + **LightGBM** (leak-free train/valid/test segments) → cross-sectional IC & score-quantile evaluation |
 
+The Streamlit app's **Portfolio mode** sidebar can load `weights_skfolio.json`
+(*equal split* vs *skfolio weights*, pick model) — each leg's capital and
+`trade_size` scale with its weight.
+
 ```bash
 pip install -r requirements.txt -r requirements-ml.txt
 jupyter notebook notebooks/

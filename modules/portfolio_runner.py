@@ -1,20 +1,24 @@
 # portfolio_runner.py
 # -*- coding: utf-8 -*-
-"""Multi-asset portfolio backtests (v0.3.0).
+"""Multi-asset portfolio backtests (v0.3.0, custom weights since v0.4.x).
 
-Runs N independent single-asset backtests with an equal capital split,
-aligns the per-asset equity curves into a portfolio summary equity, and
-computes per-asset contribution analysis.
+Runs N independent single-asset backtests with either an equal capital
+split or caller-supplied per-asset weights (e.g. skfolio output from
+``notebooks/01_skfolio_portfolio_optimization.ipynb``), aligns the
+per-asset equity curves into a portfolio summary equity, and computes
+per-asset contribution analysis.
 
 Each leg reuses the existing single-asset runner unchanged (including its
 BTCUSDT instrument factory); legs run on separate engines, so only the
 equity/PnL aggregation is portfolio-level — cross-asset position netting
-and shared-margin accounting are out of scope for v0.3.0.
+and shared-margin accounting are out of scope.
 """
 
 from __future__ import annotations
 
 import logging
+import numbers
+from decimal import Decimal
 from typing import Any, Dict, List, Tuple, Type
 
 import numpy as np
@@ -29,18 +33,78 @@ _logger = logging.getLogger(__name__)
 __all__ = ["run_portfolio_backtest"]
 
 
+def _cfg_field_default(cfg_cls: Type[StrategyConfig], field: str) -> Any:
+    """Best-effort read of a config field default.
+
+    Nautilus configs are msgspec structs (no ``model_fields``), so the
+    constructor signature is the reliable source; pydantic/dataclass are
+    fallbacks for other config styles.
+    """
+    import inspect
+
+    try:
+        param = inspect.signature(cfg_cls).parameters.get(field)
+        if param is not None and param.default is not inspect.Parameter.empty:
+            return param.default
+    except (TypeError, ValueError):
+        pass
+    mf = getattr(cfg_cls, "model_fields", None)
+    if isinstance(mf, dict) and field in mf:
+        default = mf[field].default
+        if default is not None:
+            return default
+    dfields = getattr(cfg_cls, "__dataclass_fields__", {})
+    if field in dfields:
+        f = dfields[field]
+        if f.default is not None:
+            return f.default
+    return None
+
+
+def _scale_trade_size(
+    params: Dict[str, Any],
+    cfg_cls: Type[StrategyConfig],
+    ratio: float,
+) -> Dict[str, Any]:
+    """Scale the strategy's ``trade_size`` by a capital ratio.
+
+    Strategies size orders with a fixed-unit ``trade_size`` (they do not
+    read the account balance), so per-leg capital weights would otherwise
+    change only idle cash — not exposure. Scaling ``trade_size`` by
+    ``allocation / equal_allocation`` makes PnL proportional to the
+    allocated capital. ``ratio == 1`` returns ``params`` unchanged.
+    """
+    if ratio == 1.0 or not np.isfinite(ratio) or ratio <= 0:
+        return params
+    scaled = dict(params)
+    base = scaled.get("trade_size", _cfg_field_default(cfg_cls, "trade_size"))
+    if base is None or isinstance(base, bool):
+        return scaled
+    if isinstance(base, Decimal):
+        scaled["trade_size"] = base * Decimal(str(ratio))
+    elif isinstance(base, int):
+        scaled["trade_size"] = max(1, int(round(base * ratio)))
+    elif isinstance(base, float):
+        scaled["trade_size"] = base * ratio
+    else:
+        return scaled
+    return scaled
+
+
 def _tz_naive(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
     if getattr(idx, "tz", None) is not None:
         idx = idx.tz_convert(None)
     return pd.DatetimeIndex(idx)
 
 
-def _align_equity(curves: Dict[str, pd.Series], flat_value: float) -> pd.DataFrame:
+def _align_equity(curves: Dict[str, pd.Series], flat_value: float | Dict[str, float]) -> pd.DataFrame:
     """Align per-asset equity curves onto a shared tz-naive index.
 
     Before an asset's first observation the curve is held at its starting
-    allocation (``flat_value``); after the last observation the final value
-    is forward-filled.
+    allocation; after the last observation the final value is forward-filled.
+
+    ``flat_value`` is either a scalar (equal split) or a per-label dict of
+    starting allocations (custom weights).
     """
     indices = [_tz_naive(s.index) for s in curves.values() if not s.empty]
     if not indices:
@@ -52,13 +116,18 @@ def _align_equity(curves: Dict[str, pd.Series], flat_value: float) -> pd.DataFra
 
     out: Dict[str, pd.Series] = {}
     for label, s in curves.items():
+        fv = (
+            float(flat_value.get(label, 0.0))
+            if isinstance(flat_value, dict)
+            else float(flat_value)
+        )
         if s.empty:
-            out[label] = pd.Series(flat_value, index=idx, dtype="float64")
+            out[label] = pd.Series(fv, index=idx, dtype="float64")
             continue
         ser = pd.Series(s.to_numpy(dtype="float64"), index=_tz_naive(s.index))
         ser = ser[~ser.index.duplicated(keep="last")].sort_index()
         ser = ser.reindex(idx).ffill()
-        ser = ser.fillna(flat_value)
+        ser = ser.fillna(fv)
         out[label] = ser
     return pd.DataFrame(out, index=idx)
 
@@ -97,8 +166,9 @@ def run_portfolio_backtest(
     assets: List[Tuple[str, pd.DataFrame]],
     actor_cls: type,
     start_balance: float = 10_000.0,
+    weights: Dict[str, float] | None = None,
 ) -> Dict[str, Any]:
-    """Run an equal-weight portfolio of independent single-asset backtests.
+    """Run a portfolio of independent single-asset backtests.
 
     Parameters
     ----------
@@ -107,7 +177,16 @@ def run_portfolio_backtest(
     assets : list of (label, DataFrame)
         One OHLCV DataFrame per asset (layout produced by ``load_ohlcv_csv``).
     start_balance : float
-        Total portfolio starting capital, split equally across assets.
+        Total portfolio starting capital.
+    weights : dict, optional
+        Per-asset relative weights (e.g. from ``notebooks/weights_skfolio.json``).
+        Keys are matched against asset labels (case-insensitive) and
+        renormalized over the selected assets. Missing / non-positive entries
+        count as 0; custom legs allocating less than $1 are skipped. The
+        strategy's fixed-unit ``trade_size`` is scaled by each leg's capital
+        ratio so exposure follows the weights. When omitted (or when no
+        positive weight matches), capital is split equally — the v0.3.0
+        default, with ``trade_size`` untouched.
 
     Returns
     -------
@@ -119,7 +198,8 @@ def run_portfolio_backtest(
         ``contributions``   – per-asset contribution rows (DataFrame)
         ``trades_df``       – concatenated trades of all legs
         ``metrics``         – aggregate portfolio metrics
-        ``start_balance`` / ``allocation`` / ``n_assets``
+        ``start_balance`` / ``allocation`` / ``allocations`` /
+        ``weights_source`` / ``n_assets``
     """
     if not assets:
         raise ValueError("assets must contain at least one (label, dataframe) pair")
@@ -127,7 +207,26 @@ def run_portfolio_backtest(
         raise ValueError("start_balance must be positive")
 
     n = len(assets)
-    allocation = start_balance / n
+    equal_allocation = start_balance / n
+
+    # ── resolve per-leg allocations ────────────────────────────────────
+    weights_source = "equal"
+    allocs: Dict[str, float] = {label: equal_allocation for label, _ in assets}
+    if weights:
+        lookup = {
+            str(k).upper(): float(v)
+            for k, v in weights.items()
+            if isinstance(v, numbers.Real) and np.isfinite(float(v)) and float(v) > 0
+        }
+        raw = {label: lookup.get(str(label).upper(), 0.0) for label, _ in assets}
+        total = sum(raw.values())
+        if total > 0:
+            allocs = {label: start_balance * w / total for label, w in raw.items()}
+            weights_source = "custom"
+        else:
+            _logger.warning(
+                "weights provided but none match the selected assets — using equal split"
+            )
 
     results: Dict[str, Any] = {}
     failed: Dict[str, str] = {}
@@ -135,15 +234,25 @@ def run_portfolio_backtest(
     contrib_rows: List[Dict[str, Any]] = []
 
     for label, df in assets:
+        allocation = allocs[label]
         if df is None or df.empty:
             failed[label] = "empty dataframe"
             _logger.warning("Portfolio leg %s skipped: empty dataframe", label)
             continue
+        if weights_source == "custom" and allocation < 1.0:
+            failed[label] = f"custom weight too small (allocation ${allocation:,.2f} < $1)"
+            _logger.warning("Portfolio leg %s skipped: %s", label, failed[label])
+            continue
+        leg_params = params
+        if weights_source == "custom":
+            leg_params = _scale_trade_size(
+                params, cfg_cls, allocation / equal_allocation
+            )
         try:
             res = run_backtest(
                 strat_cls,
                 cfg_cls,
-                params,
+                leg_params,
                 df,
                 actor_cls=actor_cls,
                 starting_balance=allocation,
@@ -185,7 +294,7 @@ def run_portfolio_backtest(
     if not results:
         raise RuntimeError(f"All portfolio legs failed: {failed}")
 
-    components = _align_equity(curves, allocation)
+    components = _align_equity(curves, allocs)
     summary = components.sum(axis=1).to_frame(name="equity")
     summary.sort_index(inplace=True)
 
@@ -274,6 +383,8 @@ def run_portfolio_backtest(
         "trades_df": all_trades,
         "metrics": metrics,
         "start_balance": float(start_balance),
-        "allocation": float(allocation),
+        "allocation": float(equal_allocation),
+        "allocations": {label: float(allocs[label]) for label, _ in assets},
+        "weights_source": weights_source,
         "n_assets": len(results),
     }

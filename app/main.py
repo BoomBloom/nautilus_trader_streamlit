@@ -4,6 +4,7 @@ from __future__ import annotations
 
 # ───────────────────────────── standard libs ────────────────────────────────
 import sys
+import json
 import pathlib
 import numbers
 import dataclasses
@@ -1547,7 +1548,14 @@ def draw_portfolio_dashboard(
     r2[4].metric("Win Rate", _f(m.get("win_rate")) + ("%" if m.get("win_rate") is not None else ""))
     r2[5].metric("Profit Factor", _f(m.get("profit_factor")))
 
-    st.caption(f"Allocation per asset: {_f(result['allocation'])} USDT (equal split)")
+    _allocs = result.get("allocations") or {}
+    if result.get("weights_source") == "custom" and _allocs:
+        st.caption(
+            "Custom weights — "
+            + ", ".join(f"{k}: ${_f(v)}" for k, v in _allocs.items())
+        )
+    else:
+        st.caption(f"Allocation per asset: {_f(result['allocation'])} USDT (equal split)")
 
     failed = {**result.get("failed", {}), **result.get("load_errors", {})}
     if failed:
@@ -1744,9 +1752,7 @@ with st.sidebar:
             portfolio_symbols = st.multiselect(
                 "Assets", pf_syms, default=pf_syms, key="pf_symbols"
             )
-            st.caption(
-                f"{len(portfolio_symbols)} asset(s) selected — capital split equally"
-            )
+            st.caption(f"{len(portfolio_symbols)} asset(s) selected")
             portfolio_balance = st.number_input(
                 "Total capital (USDT)",
                 value=10_000.0,
@@ -1754,6 +1760,59 @@ with st.sidebar:
                 step=1_000.0,
                 key="pf_balance",
             )
+            # ── capital allocation: equal split vs skfolio weights JSON ──
+            split_src = st.radio(
+                "Capital allocation",
+                ["Equal split", "skfolio weights (JSON)"],
+                key="pf_weights_src",
+                horizontal=True,
+            )
+            custom_weights: Dict[str, float] | None = None
+            if split_src.startswith("skfolio"):
+                wpath = st.text_input(
+                    "Weights JSON",
+                    value="notebooks/weights_skfolio.json",
+                    key="pf_weights_path",
+                )
+                try:
+                    _raw = json.loads(pathlib.Path(wpath).expanduser().read_text())
+                    if isinstance(_raw, dict) and _raw and all(
+                        isinstance(v, dict) for v in _raw.values()
+                    ):
+                        _model = st.selectbox(
+                            "Model", list(_raw.keys()), key="pf_weights_model"
+                        )
+                        custom_weights = {
+                            str(k): float(v) for k, v in _raw[_model].items()
+                        }
+                    elif isinstance(_raw, dict) and _raw and all(
+                        isinstance(v, numbers.Real) for v in _raw.values()
+                    ):
+                        custom_weights = {
+                            str(k): float(v) for k, v in _raw.items()
+                        }
+                    else:
+                        st.error(
+                            "Weights JSON must be `{asset: weight}` or "
+                            "`{model: {asset: weight}}`."
+                        )
+                except FileNotFoundError:
+                    st.error(
+                        f"`{wpath}` not found — run "
+                        "`01_skfolio_portfolio_optimization.ipynb` or switch to equal split."
+                    )
+                except Exception as exc:
+                    st.error(f"Could not load weights: {exc}")
+                if custom_weights:
+                    _lk = {k.upper(): float(v) for k, v in custom_weights.items()}
+                    _prev = ", ".join(
+                        f"{sym} {_lk.get(sym.upper(), 0.0) * 100:.1f}%"
+                        for sym in portfolio_symbols
+                    )
+                    st.caption(
+                        f"JSON weights — {_prev} (normalized over selected assets; "
+                        "legs under $1 are skipped)"
+                    )
             row2 = st.columns(2)
             start_csv = row2[0].date_input("Date from", start_csv, key="csv_start")
             end_csv = row2[1].date_input("Date to", end_csv, key="csv_end")
@@ -1888,6 +1947,12 @@ if run_bt and portfolio_mode:
             if not assets:
                 st.error("No data found for the selected assets / date range.")
                 st.stop()
+            weights_arg: Dict[str, float] | None = None
+            if custom_weights:
+                _lk = {k.upper(): float(v) for k, v in custom_weights.items()}
+                weights_arg = {
+                    sym: _lk.get(sym.upper(), 0.0) for sym in portfolio_symbols
+                }
             log_stream = io.StringIO()
             with redirect_stdout(log_stream), redirect_stderr(log_stream):
                 pf_result = run_portfolio_backtest(
@@ -1897,6 +1962,7 @@ if run_bt and portfolio_mode:
                     assets,
                     actor_cls=DashboardPublisher,
                     start_balance=float(portfolio_balance),
+                    weights=weights_arg,
                 )
             pf_result["load_errors"] = load_errors
             log_text = log_stream.getvalue()
