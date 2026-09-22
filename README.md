@@ -46,6 +46,7 @@ streamlit run app/main.py
 | **v0.4.0** | ✅ Done         | Integration of ML libraries (Qlib, skfolio) demonstrating example ML strategies based on Jupyter Notebook, showcasing integration methods and standard ML algorithms. |
 | **v0.5.0** | ✅ Done         | ML outputs drive Portfolio-mode capital allocation: skfolio weights JSON + Qlib score-derived weights (per-leg `trade_size` scales with its share). |
 | **v0.6.0** | ✅ Done         | ScoreTargetStrategy: trades on `scores_qlib.json` — buys when score > `min_score`, stays flat otherwise (closes notebook 02's score → position loop). |
+| **v0.7.0** | ✅ Done         | Score rebalancing: time-series scores file (`{"series": {ts: {symbol: score}}}`) re-gates every bar — exits when the score falls back to `min_score`, re-enters on recovery; `rebalance_interval_ms` throttles refresh. |
 
 > ⚠️ ClickHouse integration is provided only as an example and is not guaranteed to be stable.
 

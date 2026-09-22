@@ -1,4 +1,4 @@
-# test_score_strategy.py — v0.6.0: score-driven position taking
+# test_score_strategy.py — v0.6.0 score gating + v0.7.0 series rebalancing
 from __future__ import annotations
 
 import json
@@ -58,7 +58,8 @@ def main() -> int:
     infos = discover_strategies()
     assert "ScoreTargetStrategy" in infos, sorted(infos)
     info = infos["ScoreTargetStrategy"]
-    print("[2] ScoreTargetStrategy discovered OK")
+    assert "rebalance_interval_ms" in info.cfg_cls.__annotations__, "v0.7.0 field missing"
+    print("[2] ScoreTargetStrategy discovered OK (incl. rebalance_interval_ms)")
 
     # ── [3] portfolio run: BTC buys, ETH/SOL stay flat (score injection) ──
     assets = load_assets(SYMS)
@@ -115,6 +116,40 @@ def main() -> int:
     dsc = symbol_scores(default_path)
     assert set(dsc) == {"BTCUSD", "ETHUSD", "SOLUSD"}, dsc
     print(f"[5] default scores artifact OK — {dsc}")
+
+    # ── [6] score series: enter → exit → re-enter → exit (v0.7.0) ──
+    # Two completed round trips require the re-entry path — a one-shot
+    # entry-gate (v0.6.0) could only ever produce one closed trade.
+    from strategies.score_target import score_history, series_score
+
+    with tempfile.TemporaryDirectory() as td:
+        sp = pathlib.Path(td) / "series.json"
+        idx = assets[0][1].index
+        assert len(idx) > 151, f"not enough bars: {len(idx)}"
+        points = {
+            idx[0].isoformat(): 0.5,     # enter
+            idx[50].isoformat(): -1.0,   # exit
+            idx[100].isoformat(): 0.5,   # re-enter
+            idx[150].isoformat(): -1.0,  # exit again
+        }
+        sp.write_text(json.dumps(
+            {"series": {ts: {"BTCUSDT": sc} for ts, sc in points.items()}}))
+        hist = score_history(sp)
+        assert hist is not None and len(hist) == 4, hist
+        # lookup: before first point → flat, after second → negative
+        assert series_score(hist, "BTCUSDT", hist[0][0]) == 0.5
+        assert series_score(hist, "BTCUSDT", hist[1][0]) == -1.0
+        assert series_score(hist, "BTCUSDT", hist[0][0] - 1) == 0.0
+        res6 = run_portfolio_backtest(
+            info.strategy_cls, info.cfg_cls,
+            {"scores_path": str(sp)},
+            assets[:1],
+            actor_cls=DashboardPublisher,
+            start_balance=10_000.0,
+        )
+    assert res6["n_assets"] == 1, res6["n_assets"]
+    assert res6["metrics"]["num_trades"] == 2, res6["metrics"]
+    print(f"[6] score series rebalancing OK — round trips={res6['metrics']['num_trades']}")
 
     print("\nSCORE STRATEGY VERIFY PASSED ✔")
     return 0
