@@ -2,13 +2,13 @@
 --extra-index-url https://pypi.org/simple
 --only-binary=nautilus-trader
 
-wheel
-streamlit
-pandas
-numpy
-plotly
-nautilus_trader
-clickhouse-driver
-python-dotenv
-streamlit-lightweight-charts-v5>=0.1.7
-extra-streamlit-components
+wheel==0.48.0
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
+plotly==7.1.0
+nautilus_trader==1.231.0
+clickhouse-driver==0.2.11
+python-dotenv==1.2.3
+streamlit-lightweight-charts-v5==0.2.0
+extra-streamlit-components==0.1.81

@@ -41,7 +41,7 @@ streamlit run app/main.py
 | Version    | Status         | Features                                                                                   |
 | ---------- | -------------- | ------------------------------------------------------------------------------------------ |
 | **v0.1.5** | ✅ Done         | Basic single-asset strategy visualization.                                                 |
-| **v0.2.0** | 🚧 In progress | Single-asset dashboard is fully usable and intuitive, featuring clear equity curves, drawdown analysis, trade markers, and essential risk metrics (VaR, Sharpe ratio).                |
+| **v0.2.0** | ✅ Done         | Single-asset dashboard is fully usable and intuitive, featuring clear equity curves, drawdown analysis, trade markers, and essential risk metrics (VaR, Sharpe ratio).                |
 | **v0.3.0** | ✅ Done         | Multi-asset portfolio backtests: summary equity, asset contribution analysis.              |
 | **v0.4.0** | ✅ Done         | Integration of ML libraries (Qlib, skfolio) demonstrating example ML strategies based on Jupyter Notebook, showcasing integration methods and standard ML algorithms. |
 | **v0.5.0** | ✅ Done         | ML outputs drive Portfolio-mode capital allocation: skfolio weights JSON + Qlib score-derived weights (per-leg `trade_size` scales with its share). |

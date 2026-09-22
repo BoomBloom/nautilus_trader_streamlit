@@ -3,13 +3,13 @@
 #
 #   pip install -r requirements.txt -r requirements-ml.txt
 
-skfolio>=1.3,<2
+skfolio==1.3.0
 # PyPI package is `pyqlib` (import name: `qlib`).
 # WARNING: the PyPI project `qlib` (0.0.2.dev20) is an unrelated name-squatter — do NOT install it.
-pyqlib>=0.9.7
-lightgbm>=4.0
-jupyter
-nbconvert
-ipykernel
-nbformat
-plotly>=5
+pyqlib==0.9.7
+lightgbm==4.7.0
+jupyter==1.1.1
+nbconvert==7.17.1
+ipykernel==7.3.0
+nbformat==5.11.1
+plotly==7.1.0

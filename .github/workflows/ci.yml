@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Byte-compile
+        run: python -m compileall -q app modules strategies tests
+
+      - name: Portfolio weights runner
+        run: python tests/verify_weights.py
+
+      - name: Qlib scores helpers + runner
+        run: python tests/verify_scores.py
+
+      - name: App E2E (weights + scores)
+        run: python tests/app_test_weights.py
